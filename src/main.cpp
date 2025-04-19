@@ -21,7 +21,6 @@ unsigned long debounceDelay = 50;        // Debounce time in milliseconds
 
 // --- State Variables ---
 bool screen_on = true; // Let's use positive logic: screen_on = true means display is active
-// Removed led_state as it should always mirror screen_on for the power pin
 
 Adafruit_BME280 bme;
 // Use SH1106G for the 1.3" OLED
@@ -33,6 +32,17 @@ void handleButtonInterrupt()
     buttonPressedFlag = true;
 };
 
+// Helper function to display centered text
+void displayCenteredText(const char *text, int y)
+{
+    int16_t x1, y1;
+    uint16_t w, h;
+    display.getTextBounds(text, 0, 0, &x1, &y1, &w, &h); // Calculate bounds
+    int x = (SCREEN_WIDTH - w) / 2;
+    display.setCursor(x, y);
+    display.print(text);
+}
+
 void printSensorData(float pressure, float temperature, float humidity)
 {
     display.clearDisplay();
@@ -41,8 +51,8 @@ void printSensorData(float pressure, float temperature, float humidity)
     display.drawRect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, SH110X_WHITE);
     display.setCursor(10, 10);
     display.print("Press: ");
-    display.print(pressure, 1);
-    display.println(" mBar");
+    display.print(pressure, 3);
+    display.println(" atm");
     display.setCursor(10, 30);
     display.print("Temp: ");
     display.print(temperature, 1);
@@ -64,20 +74,21 @@ void setup()
     digitalWrite(SCREEN_POWER, screen_on ? HIGH : LOW); // Set initial power based on screen_on state
 
     Serial.begin(9600);
-    Wire.begin();
+    // Initialize Wire *before* display.begin()
+    Wire.begin(); // Use default SDA/SCL pins defined by the board variant (PB7/PB6 for Blackpill)
 
     Serial.println("Starting Initialization...");
     Serial.println("--------------------------");
 
     // Initialize Display - Retry Loop
     Serial.println("Initializing Display...");
-    while (!display.begin(0x3C, true))
+    while (!display.begin(0x3C, true)) // Address 0x3C, init i2c if not yet started
     {
         Serial.println(F("SH1106 connection failed."));
         Serial.print(F("Expecting SCL=PB"));
-        Serial.print(PIN_WIRE_SCL);
+        Serial.print(PIN_WIRE_SCL); // Use defined pin number from variant
         Serial.print(F(", SDA=PB"));
-        Serial.print(PIN_WIRE_SDA);
+        Serial.print(PIN_WIRE_SDA); // Use defined pin number from variant
         Serial.print(F(", Power=PB"));
         Serial.print(digitalPinToPinName(SCREEN_POWER));
         Serial.println(F(". Check wiring."));
@@ -93,10 +104,7 @@ void setup()
     display.clearDisplay();
     display.setTextSize(1);
     display.setTextColor(SH110X_WHITE);
-    // Center "Display OK" (10 chars * 6 pixels/char = 60 pixels wide)
-    // X = (128 - 60) / 2 = 34
-    display.setCursor(34, 28);   // Centered X, Middle Y
-    display.print("Display OK"); // Use print for centering
+    displayCenteredText("Display OK", 28); // Use helper function
     display.display();
     delay(500); // Show message briefly
     Serial.println("--------------------------");
@@ -104,14 +112,10 @@ void setup()
     // --- Initialize BME280 - Retry Loop ---
     Serial.println("Initializing BME280 Sensor...");
     display.clearDisplay();
-    // Center "Finding BME280..." (17 chars * 6 pixels/char = 102 pixels wide)
-    // X = (128 - 102) / 2 = 13
-    display.setCursor(13, 28);          // Centered X, Middle Y
-    display.print("Finding BME280..."); // Use print for centering
+    displayCenteredText("Finding BME280...", 28); // Use helper function
     display.display();
-    while (!bme.begin(BME_ADDR))
+    while (!bme.begin(BME_ADDR, &Wire)) // Pass Wire object explicitly
     {
-        // ... (BME error handling code remains the same - already centered) ...
         Serial.println(F("BME280 connection failed."));
         Serial.print(F("Expecting SCL=PB"));
         Serial.print(PIN_WIRE_SCL);
@@ -125,14 +129,10 @@ void setup()
         display.clearDisplay();
         display.setTextSize(1);
         display.setTextColor(SH110X_WHITE);
-        display.setCursor(10, 5);
-        display.print("BME280 Not Found!");
-        display.setCursor(25, 25);
-        display.print("Check Wiring:");
-        display.setCursor(13, 35);
-        display.print("SDA=PB7, SCL=PB6");
-        display.setCursor(34, 50);
-        display.print("Retrying...");
+        displayCenteredText("BME280 Not Found!", 5);
+        displayCenteredText("Check Wiring:", 20);
+        displayCenteredText("SDA=PB7, SCL=PB6", 35);
+        displayCenteredText("Retrying...", 50);
         display.display();
 
         digitalWrite(PC13, LOW);
@@ -143,12 +143,9 @@ void setup()
     // --- BME280 Initialized OK ---
     Serial.println("BME280 Found!");
     display.clearDisplay();
-    // Center "BME280 OK (0xHH)" (17 chars * 6 pixels/char = 102 pixels wide)
-    // X = (128 - 102) / 2 = 13
-    display.setCursor(13, 28); // Centered X, Middle Y
-    display.print("BME280 OK (0x");
-    display.print(BME_ADDR, HEX);
-    display.print(")"); // Use print for centering
+    char bmeOkMsg[20]; // Buffer for the message
+    snprintf(bmeOkMsg, sizeof(bmeOkMsg), "BME280 OK (0x%X)", BME_ADDR);
+    displayCenteredText(bmeOkMsg, 28); // Use helper function
     display.display();
     delay(1000); // Show message
     Serial.println("--------------------------");
@@ -161,13 +158,11 @@ void setup()
 
     // --- Ready Message ---
     display.clearDisplay();
-    // Center "Ready!" (6 chars * 6 pixels/char = 36 pixels wide)
-    // X = (128 - 36) / 2 = 46
-    display.setCursor(46, 28); // Centered X, Middle Y
-    display.print("Ready!");   // Use print for centering
+    displayCenteredText("Ready!", 28); // Use helper function
     display.display();
     delay(1000);            // Show message
     display.clearDisplay(); // Clear screen before entering loop
+    display.display();      // Send clear command
 
     Serial.println("Setup Complete. Entering main loop.");
     Serial.println("==========================");
@@ -189,12 +184,22 @@ void loop()
             if (next_screen_state == false) // Turning OFF
             {
                 Serial.println("Screen turning OFF");
-                // 1. Clear the display buffer
+
+                // --- Display "Bye" message ---
+                display.clearDisplay();
+                display.setTextSize(1);             // Ensure text size is set
+                display.setTextColor(SH110X_WHITE); // Ensure color is set
+                displayCenteredText("Bye ;)", 28);  // Display centered message
+                display.display();
+                delay(500); // Show message for 0.5 seconds
+                // --- End "Bye" message ---
+
+                // 1. Clear the display buffer again (good practice before power off)
                 display.clearDisplay();
                 // 2. Send the clear command to the physical display
                 display.display();
                 // 3. Wait a short moment for the command to process before cutting power
-                delay(50); // Increased delay slightly, adjust if needed
+                delay(50); // Keep short delay
                 // 4. Now, cut the power
                 digitalWrite(SCREEN_POWER, LOW);
                 Serial.println("Screen Power Pin (PB1) set to: LOW (OFF)");
@@ -206,19 +211,27 @@ void loop()
                 digitalWrite(SCREEN_POWER, HIGH);
                 Serial.println("Screen Power Pin (PB1) set to: HIGH (ON)");
                 // 2. Give power time to stabilize and display to wake up
-                delay(100); // Increased delay, adjust if needed
+                delay(100); // Keep delay
                 // 3. Re-initialize the display (important after power cycle)
                 if (!display.begin(0x3C, true))
                 {
                     Serial.println("Failed to re-init display after power on!");
-                    // Optional: handle re-init failure, maybe revert state?
-                    // For now, we'll proceed, but it might not display correctly.
                     next_screen_state = false;       // Force state back to off if re-init fails
                     digitalWrite(SCREEN_POWER, LOW); // Turn power back off
                 }
                 else
                 {
-                    display.clearDisplay(); // Clear after successful re-init
+                    // --- Display "Hello" message ---
+                    display.clearDisplay();
+                    display.setTextSize(1);              // Ensure text size is set
+                    display.setTextColor(SH110X_WHITE);  // Ensure color is set
+                    displayCenteredText("Hello ;P", 28); // Display centered message
+                    display.display();
+                    delay(500); // Show message for 0.5 seconds
+                    // --- End "Hello" message ---
+
+                    // Clear display buffer before resuming normal operation
+                    display.clearDisplay();
                     display.display();
                 }
             }
@@ -250,15 +263,21 @@ void loop()
             }
             else
             {
-                display.clearDisplay();
+                display.clearDisplay(); // Clear after successful re-init
                 display.display();
+                // Optionally show "Hello" again here if desired after unexpected power loss recovery
+                // displayCenteredText("Hello ;P", 28);
+                // display.display();
+                // delay(500);
+                // display.clearDisplay();
+                // display.display();
             }
         }
 
         // Read sensor values
         float temperature = bme.readTemperature();
         float humidity = bme.readHumidity();
-        float pressure = bme.readPressure() / 100.0F; // Convert Pa to hPa (mBar)
+        float pressure = bme.readPressure() / 101325.0F; // Convert Pa to atm
 
         // Check for valid readings
         if (isnan(temperature) || isnan(humidity) || isnan(pressure))
@@ -268,10 +287,8 @@ void loop()
             display.clearDisplay();
             display.setTextSize(1);
             display.setTextColor(SH110X_WHITE);
-            display.setCursor(10, 20);
-            display.print("BME Sensor Error!");
-            display.setCursor(10, 35);
-            display.print("Check Connection");
+            displayCenteredText("BME Sensor Error!", 20);
+            displayCenteredText("Check Connection", 35);
             display.display();
             // Still blink LED even if sensor fails, shows MCU is running
         }
@@ -282,15 +299,14 @@ void loop()
 
             // Print sensor values to serial monitor
             Serial.print(">Pressure:");
-            Serial.print(pressure, 1);
-            Serial.println("§mBar");
+            Serial.print(pressure, 5);
+            Serial.println("§atm"); // Corrected unit symbol
             Serial.print(">Temp:");
             Serial.print(temperature, 1);
-            Serial.println("§C");
+            Serial.println("§C"); // Corrected unit symbol
             Serial.print(">Hum:");
             Serial.print(humidity, 1);
-            Serial.println("§%");
-            // Serial.println(" %");
+            Serial.println("§%"); // Corrected unit symbol
         }
 
         // Blink the built-in LED as a heartbeat ONLY when screen is on
