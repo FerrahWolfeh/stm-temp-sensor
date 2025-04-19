@@ -10,9 +10,8 @@
 #define OLED_RESET -1
 #define BME_ADDR 0x76
 #define BUTTON_PIN PA0
-#define SCREEN_POWER PB1 // Use a define for the screen power pin
-#define I2C_SDA PB7      // Define I2C SDA pin
-#define I2C_SCL PB6      // Define I2C SCL pin
+#define I2C_SDA PB7 // Define I2C SDA pin
+#define I2C_SCL PB6 // Define I2C SCL pin
 
 // --- Debounce Variables ---
 volatile bool buttonPressedFlag = false; // Flag set by ISR
@@ -51,8 +50,8 @@ void printSensorData(float pressure, float temperature, float humidity)
     display.drawRect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, SH110X_WHITE);
     display.setCursor(10, 10);
     display.print("Press: ");
-    display.print(pressure, 3);
-    display.println(" atm");
+    display.print(pressure, 2);
+    display.println(" mBar");
     display.setCursor(10, 30);
     display.print("Temp: ");
     display.print(temperature, 1);
@@ -67,11 +66,9 @@ void printSensorData(float pressure, float temperature, float humidity)
 void setup()
 {
     pinMode(PC13, OUTPUT);
-    pinMode(SCREEN_POWER, OUTPUT);
     pinMode(BUTTON_PIN, INPUT_PULLUP);
 
-    digitalWrite(PC13, HIGH);                           // Turn off built-in LED initially
-    digitalWrite(SCREEN_POWER, screen_on ? HIGH : LOW); // Set initial power based on screen_on state
+    digitalWrite(PC13, HIGH); // Turn off built-in LED initially
 
     Serial.begin(9600);
     // Initialize Wire *before* display.begin()
@@ -88,9 +85,7 @@ void setup()
         Serial.print(F("Expecting SCL=PB"));
         Serial.print(PIN_WIRE_SCL); // Use defined pin number from variant
         Serial.print(F(", SDA=PB"));
-        Serial.print(PIN_WIRE_SDA); // Use defined pin number from variant
-        Serial.print(F(", Power=PB"));
-        Serial.print(digitalPinToPinName(SCREEN_POWER));
+        Serial.print(PIN_WIRE_SDA);
         Serial.println(F(". Check wiring."));
         Serial.println(F("Retrying in 1 second..."));
         digitalWrite(PC13, LOW);
@@ -200,24 +195,17 @@ void loop()
                 display.display();
                 // 3. Wait a short moment for the command to process before cutting power
                 delay(50); // Keep short delay
-                // 4. Now, cut the power
-                digitalWrite(SCREEN_POWER, LOW);
-                Serial.println("Screen Power Pin (PB1) set to: LOW (OFF)");
             }
             else // Turning ON
             {
                 Serial.println("Screen turning ON");
-                // 1. Apply power first
-                digitalWrite(SCREEN_POWER, HIGH);
-                Serial.println("Screen Power Pin (PB1) set to: HIGH (ON)");
                 // 2. Give power time to stabilize and display to wake up
                 delay(100); // Keep delay
                 // 3. Re-initialize the display (important after power cycle)
                 if (!display.begin(0x3C, true))
                 {
                     Serial.println("Failed to re-init display after power on!");
-                    next_screen_state = false;       // Force state back to off if re-init fails
-                    digitalWrite(SCREEN_POWER, LOW); // Turn power back off
+                    next_screen_state = false; // Force state back to off if re-init fails
                 }
                 else
                 {
@@ -246,38 +234,11 @@ void loop()
     // --- Sensor Reading, Display Update, and Heartbeat ---
     if (screen_on)
     {
-        // Ensure display power is ON (Safety check, though button logic should handle it)
-        if (digitalRead(SCREEN_POWER) == LOW)
-        {
-            Serial.println("WARN: Screen power was LOW when screen_on was true. Turning ON.");
-            digitalWrite(SCREEN_POWER, HIGH);
-            delay(100); // Delay for power up
-            // Attempt re-initialization again if power was unexpectedly off
-            if (!display.begin(0x3C, true))
-            {
-                Serial.println("FATAL: Failed to re-init display after unexpected power loss!");
-                screen_on = false;               // Mark screen as off
-                digitalWrite(SCREEN_POWER, LOW); // Turn power back off
-                // Skip the rest of the 'if (screen_on)' block for this iteration
-                goto end_of_loop; // Use goto sparingly, but useful here to skip processing
-            }
-            else
-            {
-                display.clearDisplay(); // Clear after successful re-init
-                display.display();
-                // Optionally show "Hello" again here if desired after unexpected power loss recovery
-                // displayCenteredText("Hello ;P", 28);
-                // display.display();
-                // delay(500);
-                // display.clearDisplay();
-                // display.display();
-            }
-        }
-
         // Read sensor values
         float temperature = bme.readTemperature();
         float humidity = bme.readHumidity();
-        float pressure = bme.readPressure() / 101325.0F; // Convert Pa to atm
+        float pressure = bme.readPressure() / 100.0F; // Convert Pa to mBar
+        float altitude = bme.readAltitude(1013.25);
 
         // Check for valid readings
         if (isnan(temperature) || isnan(humidity) || isnan(pressure))
@@ -300,7 +261,7 @@ void loop()
             // Print sensor values to serial monitor
             Serial.print(">Pressure:");
             Serial.print(pressure, 5);
-            Serial.println("§atm"); // Corrected unit symbol
+            Serial.println("§mBar"); // Corrected unit symbol
             Serial.print(">Temp:");
             Serial.print(temperature, 1);
             Serial.println("§C"); // Corrected unit symbol
@@ -319,12 +280,6 @@ void loop()
     }
     else // screen_on is false
     {
-        // Ensure display power is OFF (Safety check)
-        if (digitalRead(SCREEN_POWER) == HIGH)
-        {
-            Serial.println("WARN: Screen power was HIGH when screen_on was false. Turning OFF.");
-            digitalWrite(SCREEN_POWER, LOW);
-        }
 
         // Ensure LED is OFF when screen is off
         digitalWrite(PC13, HIGH); // HIGH turns PC13 LED OFF on many boards
