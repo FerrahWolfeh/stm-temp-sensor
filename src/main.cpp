@@ -1,371 +1,192 @@
-#include <Arduino.h>
-#include <Wire.h>
-#include <Adafruit_BME280.h>
-#include <Adafruit_Sensor.h>
-#include <Adafruit_GFX.h>
-#include <Adafruit_SH110X.h>
-#include <stdio.h>    // Required for snprintf
-#include <STM32RTC.h> // Required for RTC
+#include <Arduino.h> // Core Arduino framework
+#include <Wire.h>    // I2C communication library
 
-#define SCREEN_WIDTH 128
-#define SCREEN_HEIGHT 64
-#define OLED_RESET -1
-#define BME_ADDR 0x76
-#define BUTTON_PIN PA0
-#define I2C_SDA PB7 // Define I2C SDA pin (already default for Blackpill)
-#define I2C_SCL PB6 // Define I2C SCL pin (already default for Blackpill)
-
-// --- Timing Intervals (milliseconds) ---
-const unsigned long sensorReadInterval = 1000;   // How often to read the sensor
-const unsigned long displayUpdateInterval = 100; // How often to update the display (faster)
-const unsigned long ledBlinkDuration = 50;       // How long the LED stays on during blink
+// Include our custom header files
+#include "config.h"  // Pin definitions, constants, timing intervals
+#include "sensors.h" // Sensor functions and variables (readSensors, bme, currentTemperature, etc.)
+#include "display.h" // Display functions and variables (printSensorData, display, currentDisplayMode, etc.)
 
 // --- Timing Variables ---
-unsigned long lastSensorReadTime = 0;
-unsigned long lastDisplayUpdateTime = 0;
-// --- Non-blocking LED Blink Variables ---
-unsigned long ledBlinkStartTime = 0;
-bool ledIsOn = false; // Tracks if the timed blink is active
+// These track the last time certain actions were performed for non-blocking delays.
+unsigned long lastSensorReadTime = 0;    // Last time sensors were read
+unsigned long lastDisplayUpdateTime = 0; // Last time the display was updated
 
-// --- Debounce Variables ---
-unsigned long lastDebounceTime = 0; // Time the button state last changed
-unsigned long debounceDelay = 50;   // Debounce time (ms). 50ms is usually good.
-byte buttonState = HIGH;            // Current processed button state (stable)
-byte lastButtonState = HIGH;        // Previous raw reading from pin
+// --- Button Debounce Variables ---
+// Used to ensure a single button press registers only once.
+unsigned long lastDebounceTime = 0; // Time the button pin last changed state
+byte buttonState = HIGH;            // Current stable (debounced) state of the button (HIGH = not pressed)
+byte lastButtonState = HIGH;        // Previous raw reading from the button pin
 
-// --- Display Mode Enum ---
-enum DisplayMode
-{
-    PRESSURE_MBAR,
-    PRESSURE_ATM,
-    ALTITUDE,
-    UPTIME // Added Uptime mode
-};
-const int NUM_DISPLAY_MODES = 4; // Total number of modes
-
-// --- State Variables ---
-DisplayMode currentDisplayMode = PRESSURE_MBAR; // Start with mBar display
-
-// --- Global Sensor Value Cache ---
-float currentTemperature = NAN;
-float currentHumidity = NAN;
-float currentPressureMbar = NAN;
-float currentPressureAtm = NAN;
-float currentAltitude = NAN;
-bool sensorReadError = false; // Flag to indicate if the last read failed
-
-// --- RTC Uptime Variable ---
-time_t startTimeEpoch = 0; // Store the RTC epoch at the end of setup
-
-// --- Peripheral Objects ---
-Adafruit_BME280 bme;
-Adafruit_SH1106G display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
-STM32RTC &rtc = STM32RTC::getInstance(); // Get the RTC instance
-
-// Helper function to display centered text
-void displayCenteredText(const char *text, int y)
-{
-    int16_t x1, y1;
-    uint16_t w, h;
-    display.getTextBounds(text, 0, 0, &x1, &y1, &w, &h); // Calculate bounds
-    int x = (SCREEN_WIDTH - w) / 2;
-    display.setCursor(x, y);
-    display.print(text);
-}
-
-// --- Modified printSensorData ---
-void printSensorData()
-{
-    // ... (function unchanged) ...
-    display.clearDisplay();
-    display.setTextColor(SH110X_WHITE);
-    display.setTextSize(1);
-    display.drawRect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, SH110X_WHITE);
-
-    if (sensorReadError && currentDisplayMode != UPTIME)
-    {
-        displayCenteredText("BME Sensor Error!", 20);
-        displayCenteredText("Check Connection", 35);
-    }
-    else
-    {
-        switch (currentDisplayMode)
-        {
-        case PRESSURE_MBAR:
-            if (isnan(currentPressureMbar))
-            {
-                displayCenteredText("Reading...", 28);
-            }
-            else
-            {
-                display.setCursor(10, 10);
-                display.print("Press: ");
-                display.print(currentPressureMbar, 2);
-                display.println(" mBar");
-            }
-            break;
-        case PRESSURE_ATM:
-            if (isnan(currentPressureAtm))
-            {
-                displayCenteredText("Reading...", 28);
-            }
-            else
-            {
-                display.setCursor(10, 10);
-                display.print("Press: ");
-                display.print(currentPressureAtm, 4);
-                display.println(" atm");
-            }
-            break;
-        case ALTITUDE:
-            if (isnan(currentAltitude))
-            {
-                displayCenteredText("Reading...", 28);
-            }
-            else
-            {
-                display.setCursor(10, 10);
-                display.print("Alt: ");
-                display.print(currentAltitude, 1);
-                display.println(" m");
-            }
-            break;
-        case UPTIME:
-        {
-            time_t currentEpoch = rtc.getEpoch();
-            unsigned long totalSeconds = (currentEpoch >= startTimeEpoch) ? (currentEpoch - startTimeEpoch) : 0;
-            int seconds = totalSeconds % 60;
-            int minutes = (totalSeconds / 60) % 60;
-            int hours = (totalSeconds / 3600) % 24;
-            int days = totalSeconds / (3600 * 24);
-            char uptimeStr[25];
-            snprintf(uptimeStr, sizeof(uptimeStr), "%d d %02d:%02d:%02d", days, hours, minutes, seconds);
-            displayCenteredText("Device Uptime", 15);
-            displayCenteredText(uptimeStr, 35);
-        }
-        break;
-        }
-
-        if (currentDisplayMode != UPTIME)
-        {
-            if (isnan(currentTemperature) || isnan(currentHumidity))
-            {
-                display.setCursor(10, 30);
-                display.println("Temp: --- C");
-                display.setCursor(10, 50);
-                display.println("Hum:  --- %");
-            }
-            else
-            {
-                display.setCursor(10, 30);
-                display.print("Temp: ");
-                display.print(currentTemperature, 1);
-                display.println(" C");
-                display.setCursor(10, 50);
-                display.print("Hum: ");
-                display.print(currentHumidity, 1);
-                display.println(" %");
-            }
-        }
-    }
-    display.display();
-}
-
-// --- Function to Read Sensors and Update Globals ---
-void readSensors()
-{
-    digitalWrite(PC13, LOW); // Turn LED ON at the start of the read attempt
-    // *** DEBUG LINE ***
-    Serial.print(millis());
-    Serial.println(" : LED ON");
-
-    float temp = bme.readTemperature();
-    float hum = bme.readHumidity();
-    float pres = bme.readPressure();
-
-    if (isnan(temp) || isnan(hum) || isnan(pres))
-    {
-        Serial.println("Sensor read FAILED."); // DEBUG
-        sensorReadError = true;
-        ledIsOn = false; // Ensure timed blink logic doesn't turn off the solid error LED
-    }
-    else
-    {
-        // *** DEBUG LINE ***
-        // Serial.println("Sensor read SUCCESS."); // Can comment this out if desired
-
-        sensorReadError = false;
-        currentTemperature = temp;
-        currentHumidity = hum;
-        currentPressureMbar = pres / 100.0F;
-        currentPressureAtm = currentPressureMbar / 1013.25F;
-        currentAltitude = bme.readAltitude(1013.25);
-
-        // --- Teleplot Formatted Serial Output ---
-        Serial.print(">Pressure (mBar):");
-        Serial.print(currentPressureMbar, 2); // 2 decimal places
-        Serial.println("§mBar");
-
-        Serial.print(">Pressure (atm):");
-        Serial.print(currentPressureAtm, 4); // 4 decimal places
-        Serial.println("§atm");
-
-        Serial.print(">Temperature:");
-        Serial.print(currentTemperature, 1); // 1 decimal place
-        Serial.println("§C");
-
-        Serial.print(">Humidity:");
-        Serial.print(currentHumidity, 1); // 1 decimal place
-        Serial.println("§%");
-
-        Serial.print(">Altitude:");
-        Serial.print(currentAltitude, 1); // 1 decimal place
-        Serial.println("§m");
-        // --- End Teleplot Output ---
-
-        // --- Start non-blocking LED blink timer ---
-        ledIsOn = true;               // Activate the timed blink
-        ledBlinkStartTime = millis(); // Record the start time
-        // *** DEBUG LINE ***
-        Serial.print(ledBlinkStartTime);
-        Serial.println(" : Blink timer started");
-    }
-}
-
+/**
+ * @brief Setup function: Initializes hardware and software components once on boot.
+ */
 void setup()
 {
-    // ... (Setup remains the same) ...
-    pinMode(PC13, OUTPUT);
-    pinMode(BUTTON_PIN, INPUT_PULLUP);
-    digitalWrite(PC13, HIGH);
-    Serial.begin(9600);
-    Wire.begin();
-    Serial.println("Starting Initialization...");
+    // --- Initialize Hardware Pins ---
+    pinMode(LED_PIN, OUTPUT);          // Configure the built-in LED pin as output
+    pinMode(BUTTON_PIN, INPUT_PULLUP); // Configure the button pin as input with internal pull-up resistor
+    digitalWrite(LED_PIN, HIGH);       // Turn the LED OFF initially (HIGH = OFF for PC13 on many STM32 boards)
+
+    // --- Initialize Serial Communication ---
+    Serial.begin(9600); // Start serial monitor communication at 9600 baud
+    while (!Serial && millis() < 5000)
+        ; // Wait for Serial port to connect (optional, useful for some boards)
+    Serial.println("\n\nStarting Initialization...");
     Serial.println("--------------------------");
-    Serial.println("Initializing RTC...");
-    rtc.setClockSource(STM32RTC::LSE_CLOCK);
-    rtc.begin();
-    delay(100);
-    Serial.println("Setting RTC epoch to 0...");
-    rtc.setEpoch(0);
-    delay(100);
-    startTimeEpoch = rtc.getEpoch();
-    Serial.print("RTC setup complete. Start Epoch recorded: ");
-    Serial.println(startTimeEpoch);
+
+    // --- Initialize I2C Communication ---
+    // Must be called before initializing I2C devices (sensor, display)
+    Wire.begin(); // Join the I2C bus as master
+
+    // --- Initialize Real-Time Clock (RTC) ---
+    // Function defined in display.cpp (as it's closely tied to uptime display)
+    initializeRTC();
     Serial.println("--------------------------");
+
+    // --- Initialize Display ---
     Serial.println("Initializing Display...");
-    while (!display.begin(0x3C, true))
+    // Loop until the display is successfully initialized
+    while (!initializeDisplay()) // Function defined in display.cpp
     {
-        Serial.println("SH1106 failed");
-        delay(500);
+        Serial.println("Retrying Display Init...");
+        delay(500); // Wait before retrying
     }
-    Serial.println("Display Initialized OK.");
-    display.display();
-    delay(100);
-    display.clearDisplay();
-    display.setTextSize(1);
-    display.setTextColor(SH110X_WHITE);
-    displayCenteredText("Display OK", 28);
-    display.display();
-    delay(500);
+    // Display initialization confirmation is handled within initializeDisplay()
     Serial.println("--------------------------");
+
+    // --- Initialize BME280 Sensor ---
     Serial.println("Initializing BME280 Sensor...");
-    while (!bme.begin(BME_ADDR, &Wire))
+    // Loop until the sensor is successfully initialized
+    while (!initializeSensor(BME_ADDR, &Wire)) // Function defined in sensors.cpp
     {
-        Serial.println("BME280 failed");
-        delay(500);
+        Serial.println("Retrying Sensor Init...");
+        delay(500); // Wait before retrying
     }
-    Serial.println("BME280 Found!");
+    // Display sensor confirmation message
     display.clearDisplay();
-    char bmeOkMsg[20];
+    char bmeOkMsg[25]; // Increased buffer size slightly
     snprintf(bmeOkMsg, sizeof(bmeOkMsg), "BME280 OK (0x%X)", BME_ADDR);
     displayCenteredText(bmeOkMsg, 28);
     display.display();
-    delay(1000);
+    delay(1000); // Pause to show the message
     Serial.println("--------------------------");
+
+    // --- Perform Initial Sensor Read ---
     Serial.println("Performing initial sensor read...");
-    readSensors();
+    readSensors(); // Function defined in sensors.cpp
     if (sensorReadError)
     {
+        // If the first read fails, print a warning and show error on display
         Serial.println("Initial sensor read failed! LED may remain ON.");
-        printSensorData();
+        printSensorData(); // Show error message on display
     }
     else
     {
+        // If successful, print confirmation
         Serial.println("Initial sensor read OK.");
     }
     Serial.println("Button handling uses polling.");
     Serial.println("--------------------------");
+
+    // --- Final Setup Steps ---
     display.clearDisplay();
-    displayCenteredText("Ready!", 28);
+    displayCenteredText("Ready!", 28); // Show "Ready" message
     display.display();
-    delay(1000);
-    display.clearDisplay();
+    delay(1000);            // Pause
+    display.clearDisplay(); // Clear display before entering loop
     display.display();
+
     Serial.println("Setup Complete. Entering main loop.");
     Serial.println("==========================");
+
+    // Initialize timing variables for the main loop
     lastSensorReadTime = millis();
     lastDisplayUpdateTime = millis();
-    lastButtonState = digitalRead(BUTTON_PIN);
+    lastButtonState = digitalRead(BUTTON_PIN); // Read initial button state
 }
 
+/**
+ * @brief Main loop function: Runs repeatedly after setup().
+ */
 void loop()
 {
-    unsigned long loopStartMillis = millis(); // Capture millis at the start
+    // Get the current time at the start of the loop iteration.
+    // Using a single timestamp helps keep timing consistent within the loop.
+    unsigned long currentMillis = millis();
 
     // --- Button Debounce Logic (Polling State Machine) ---
-    byte reading = digitalRead(BUTTON_PIN);
+    byte reading = digitalRead(BUTTON_PIN); // Read the raw state of the button pin
+
+    // Check if the raw state has changed since the last loop iteration
     if (reading != lastButtonState)
     {
-        lastDebounceTime = loopStartMillis; // Use loopStartMillis here too
+        // If it changed, reset the debounce timer
+        lastDebounceTime = currentMillis;
     }
-    // Use loopStartMillis for debounce check consistency within the loop iteration
-    if ((loopStartMillis - lastDebounceTime) > debounceDelay)
+
+    // Check if enough time has passed since the last state change to consider it stable
+    if ((currentMillis - lastDebounceTime) > debounceDelay)
     {
+        // If the debounce delay has passed, check if the stable state is different from the current processed state
         if (reading != buttonState)
         {
-            buttonState = reading;
+            buttonState = reading; // Update the stable button state
+
+            // Check if the button was just pressed (transitioned to LOW)
             if (buttonState == LOW)
             {
-                Serial.println("Button Pressed (Debounced)"); // Keep this debug line
+                Serial.println("Button Pressed (Debounced)"); // Log the debounced press
+
+                // Cycle to the next display mode
+                // Cast current mode to int, add 1, use modulo to wrap around, cast back to DisplayMode
                 currentDisplayMode = (DisplayMode)(((int)currentDisplayMode + 1) % NUM_DISPLAY_MODES);
-                // Serial.print("Display Mode: "); // Can comment this out if desired
-                // switch (currentDisplayMode) { /* ... cases ... */ } // Can comment this out
-                printSensorData();
-                lastDisplayUpdateTime = loopStartMillis;
+
+                // Immediately update the display to show the new mode
+                printSensorData(); // Function defined in display.cpp
+                // Reset the display update timer to prevent immediate overwrite by the timed update
+                lastDisplayUpdateTime = currentMillis;
             }
+            // Optional: Add else block here to detect button release (buttonState == HIGH) if needed.
         }
     }
+    // Save the current raw reading for the next loop iteration
     lastButtonState = reading;
     // --- End Button Debounce ---
 
     // --- Timed Sensor Reading ---
-    if (loopStartMillis - lastSensorReadTime >= sensorReadInterval)
+    // Check if the interval since the last sensor read has elapsed
+    if (currentMillis - lastSensorReadTime >= sensorReadInterval)
     {
-        lastSensorReadTime = loopStartMillis; // Record time based on loop start
-        readSensors();                        // Reads sensors and prints Teleplot data
+        lastSensorReadTime = currentMillis; // Update the last read time
+        readSensors();                      // Call the sensor reading function (defined in sensors.cpp)
+                                            // This function also handles Teleplot output and starts the LED blink timer on success.
     }
 
     // --- Non-blocking LED Blink OFF Logic ---
-    unsigned long currentCheckMillis = millis();
-    if (ledIsOn && (currentCheckMillis - ledBlinkStartTime >= ledBlinkDuration))
+    // This logic turns the LED OFF after the short 'ledBlinkDuration' following a SUCCESSFUL sensor read.
+    // The 'ledIsOn' flag is set to true within readSensors() only on success.
+    if (ledIsOn && (currentMillis - ledBlinkStartTime >= ledBlinkDuration))
     {
-        // *** DEBUG LINES use currentCheckMillis for consistency ***
-        Serial.print(currentCheckMillis); // Print the time used for the check
-        Serial.print(" : Turning LED OFF. StartTime=");
-        Serial.print(ledBlinkStartTime);
-        Serial.print(", Diff=");
-        Serial.println(currentCheckMillis - ledBlinkStartTime);
+        // If the timed blink is active (ledIsOn == true) AND enough time has passed:
+        // Debug messages for LED timing
+        // Serial.print(currentMillis);
+        // Serial.print(" : Turning LED OFF. StartTime=");
+        // Serial.print(ledBlinkStartTime);
+        // Serial.print(", Diff=");
+        // Serial.println(currentMillis - ledBlinkStartTime);
 
-        digitalWrite(PC13, HIGH); // Turn LED OFF
-        ledIsOn = false;          // Deactivate timed blink
+        digitalWrite(LED_PIN, HIGH); // Turn the LED OFF
+        ledIsOn = false;             // Deactivate the timed blink state (so this check doesn't run again until the next successful read)
     }
+    // Note: If sensorReadError is true, ledIsOn remains false, and the LED stays ON
+    // because it was turned ON at the beginning of readSensors() and never turned OFF here.
 
     // --- Timed Display Update ---
-    if (loopStartMillis - lastDisplayUpdateTime >= displayUpdateInterval)
+    // Check if the interval since the last display update has elapsed
+    if (currentMillis - lastDisplayUpdateTime >= displayUpdateInterval)
     {
-        lastDisplayUpdateTime = loopStartMillis; // Record time based on loop start
-        printSensorData();
+        lastDisplayUpdateTime = currentMillis; // Update the last display time
+        printSensorData();                     // Update the display with current data/mode (defined in display.cpp)
     }
 
 } // End of loop()
