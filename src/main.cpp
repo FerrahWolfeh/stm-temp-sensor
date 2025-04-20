@@ -263,7 +263,7 @@ void loop()
 
         // Display a "SLEEPING..." message briefly before actually sleeping.
         displayCenteredMessage("SLEEPING...", 28);
-        delay(100); // Short delay to ensure the message is visible on the OLED before it's turned off.
+        delay(sleepGraceTime); // Short delay to ensure the button is released before the board powers down so that it doesn't wake up immediately after sleeping.
 
         // Prepare for sleep: Turn off peripherals to save power.
         display.clearDisplay();      // Clear the display buffer.

@@ -31,5 +31,6 @@ const unsigned long displayUpdateInterval = 100; // How often to refresh the dis
 const unsigned long ledBlinkDuration = 50;       // How long the LED stays OFF during the blink after a successful read
 const unsigned long debounceDelay = 50;          // Button debounce time (ms) - Ignores noisy transitions
 const unsigned long buttonHoldDuration = 1000;   // Milliseconds to hold button to trigger the long-press action (sleep mode)
+const unsigned long sleepGraceTime = 1000;       // How long should the baord wait before actually going to sleep mode
 
 #endif // CONFIG_H
